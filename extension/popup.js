@@ -5,21 +5,10 @@ let config = { chatId: "", apiBase: "" };
 
 // --- Init ---
 document.addEventListener("DOMContentLoaded", () => {
-  try {
-    config = getConfig();
-    if (!config.chatId || !config.apiBase) {
-      showScreen("setup-screen");
-      if (config.apiBase) $("api-url-input").value = config.apiBase;
-      if (config.chatId) $("chat-id-input").value = config.chatId;
-    } else {
-      showScreen("main-screen");
-      autoFillCurrentTab();
-      loadProducts();
-    }
-  } catch (e) {
-    showScreen("setup-screen");
-  }
-
+  config = getConfig(); // always has values due to DEFAULTS
+  showScreen("main-screen");
+  autoFillCurrentTab();
+  loadProducts();
   bindEvents();
 });
 
@@ -122,11 +111,16 @@ async function trackProduct() {
   $("track-result").classList.add("hidden");
 
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 40000); // 40s timeout
+
     const resp = await fetch(config.apiBase + "/products", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url: url, chat_id: config.chatId }),
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || "Failed to track.");
 
@@ -140,8 +134,11 @@ async function trackProduct() {
     showToast("✅ Added!");
     $("product-url").value = "";
   } catch (err) {
+    const msg = err.name === "AbortError"
+      ? "Request timed out. The product page took too long to load."
+      : err.message;
     const card = $("track-result");
-    card.innerHTML = "<div class='error-msg'>❌ " + escHtml(err.message) + "</div>";
+    card.innerHTML = "<div class='error-msg'>❌ " + escHtml(msg) + "</div>";
     card.classList.remove("hidden");
     card.classList.add("error");
   } finally {

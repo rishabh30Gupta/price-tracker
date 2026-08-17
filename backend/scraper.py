@@ -142,16 +142,18 @@ def scrape_generic(soup, url) -> dict | None:
 
 def scrape_product(url: str) -> dict | None:
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
+        # Follow redirects to handle short URLs (dl.flipkart.com/s/..., amzn.in, etc.)
+        resp = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True)
         resp.raise_for_status()
+        final_url = resp.url  # use the final URL after redirects
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        if "amazon." in url:
-            return scrape_amazon(soup, url)
-        elif "flipkart.com" in url:
-            return scrape_flipkart(soup, url)
+        if "amazon." in final_url:
+            return scrape_amazon(soup, final_url)
+        elif "flipkart.com" in final_url:
+            return scrape_flipkart(soup, final_url)
         else:
-            return scrape_generic(soup, url)
+            return scrape_generic(soup, final_url)
     except Exception as e:
         logger.error(f"scrape_product error for {url}: {e}")
         return None
