@@ -1,0 +1,28 @@
+name: Price Checker
+
+on:
+  schedule:
+    # Runs every 6 hours at minute 0
+    - cron: "0 */6 * * *"
+  workflow_dispatch: # allow manual trigger from GitHub UI
+
+jobs:
+  check-prices:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger price check on backend
+        run: |
+          echo "Triggering price check at $API_BASE/check"
+          STATUS=$(curl -s -o /tmp/response.txt -w "%{http_code}" \
+            -X POST "$API_BASE/check" \
+            -H "Content-Type: application/json" \
+            --max-time 300)
+          echo "Response: $(cat /tmp/response.txt)"
+          echo "HTTP Status: $STATUS"
+          if [ "$STATUS" -ge 400 ]; then
+            echo "Price check failed with status $STATUS"
+            exit 1
+          fi
+        env:
+          API_BASE: ${{ secrets.API_BASE }}
