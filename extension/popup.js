@@ -123,12 +123,17 @@ async function trackProduct() {
     $("track-result").classList.add("hidden");
     try {
       const data = await scrapeInBrowser(url);
-      if (data) {
+      if (data && data.price) {
         await submitToBackend(url, data);
+        return;
+      } else {
+        showError("Could not read price from page. Make sure the product page is fully loaded, then try again.");
         return;
       }
     } catch(e) {
-      // fall through to backend scrape
+      console.error("scrapeInBrowser failed:", e);
+      showError("Could not read price: " + e.message);
+      return;
     } finally {
       setTracking(false);
     }
