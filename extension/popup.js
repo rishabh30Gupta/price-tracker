@@ -107,6 +107,16 @@ async function trackProduct() {
   if (!url) { showToast("Paste a product URL first."); return; }
   if (!url.startsWith("http")) { showToast("Invalid URL."); return; }
 
+  // Short/share URLs aren't scrapable — ask for the full product page URL
+  if (url.includes("dl.flipkart.com") || url.includes("fkrt.it") ||
+      url.includes("amzn.in") || url.includes("amzn.to")) {
+    const card = $("track-result");
+    card.innerHTML = "<div class='error-msg'>⚠️ Short/share URLs aren't supported.<br><br>Please open the product in your browser and copy the <b>full URL</b> from the address bar (it should start with <b>amazon.in/dp/</b> or <b>flipkart.com/...</b>)</div>";
+    card.classList.remove("hidden");
+    card.classList.add("error");
+    return;
+  }
+
   setTracking(true);
   $("track-result").classList.add("hidden");
 
