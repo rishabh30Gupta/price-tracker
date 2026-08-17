@@ -4,9 +4,9 @@ const $ = (id) => document.getElementById(id);
 let config = { chatId: "", apiBase: "" };
 
 // --- Init ---
-document.addEventListener("DOMContentLoaded", async () => {
+document.addEventListener("DOMContentLoaded", () => {
   try {
-    config = await getConfig();
+    config = getConfig();
     if (!config.chatId || !config.apiBase) {
       showScreen("setup-screen");
       if (config.apiBase) $("api-url-input").value = config.apiBase;
@@ -17,7 +17,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       loadProducts();
     }
   } catch (e) {
-    // Fallback: always show setup screen if anything fails
     showScreen("setup-screen");
   }
 
@@ -39,14 +38,27 @@ function showTab(name) {
   if (name === "list") loadProducts();
 }
 
-// --- Storage — Firefox uses Promise-based browser.storage ---
-async function getConfig() {
-  const data = await browser.storage.local.get(["chatId", "apiBase"]);
-  return { chatId: data.chatId || "", apiBase: data.apiBase || "" };
+// --- Defaults (pre-filled so you never have to type them again) ---
+const DEFAULTS = {
+  chatId: "897964528",
+  apiBase: "https://price-tracker-production-1fe4.up.railway.app",
+};
+
+// --- Storage — uses localStorage with DEFAULTS fallback ---
+function getConfig() {
+  return {
+    chatId: localStorage.getItem("pt_chatId") || DEFAULTS.chatId,
+    apiBase: localStorage.getItem("pt_apiBase") || DEFAULTS.apiBase,
+  };
 }
 
-async function saveConfig(chatId, apiBase) {
-  await browser.storage.local.set({ chatId, apiBase });
+function saveConfig(chatId, apiBase) {
+  localStorage.setItem("pt_chatId", chatId);
+  localStorage.setItem("pt_apiBase", apiBase);
+  // Also try browser.storage but don't depend on it
+  try {
+    browser.storage.local.set({ chatId, apiBase });
+  } catch (e) {}
 }
 
 // --- Auto-fill URL ---
@@ -71,11 +83,11 @@ async function autoFillCurrentTab() {
 
 // --- Bind Events ---
 function bindEvents() {
-  $("save-setup-btn").addEventListener("click", async () => {
+  $("save-setup-btn").addEventListener("click", () => {
     const chatId = $("chat-id-input").value.trim();
     const apiBase = $("api-url-input").value.trim().replace(/\/$/, "");
     if (!chatId || !apiBase) { showToast("Please fill in both fields."); return; }
-    await saveConfig(chatId, apiBase);
+    saveConfig(chatId, apiBase);
     config = { chatId, apiBase };
     showScreen("main-screen");
     autoFillCurrentTab();
