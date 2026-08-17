@@ -26,7 +26,7 @@ body {
   flex: 1;
 }
 
-.screen.hidden { display: none; }
+.screen.hidden { display: none !important; }
 
 /* Header */
 .header {

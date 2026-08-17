@@ -8,6 +8,9 @@ let config = { chatId: "", apiBase: "" };
 
 // --- Init ---
 document.addEventListener("DOMContentLoaded", async () => {
+  // Hide all screens immediately to prevent flash of wrong screen
+  document.querySelectorAll(".screen").forEach((s) => s.classList.add("hidden"));
+
   config = await getConfig();
 
   if (!config.chatId || !config.apiBase) {
