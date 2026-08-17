@@ -84,6 +84,17 @@ class ManualProductRequest(BaseModel):
 def add_product_manual(req: ManualProductRequest):
     """Add a product with pre-scraped data (used by the browser extension)."""
     conn = get_db()
+    # Prevent duplicates — return existing if same URL + chat_id
+    existing = conn.execute(
+        "SELECT * FROM products WHERE url = ? AND chat_id = ?",
+        (req.url, req.chat_id)
+    ).fetchone()
+    if existing:
+        conn.close()
+        return {"id": existing["id"], "title": existing["title"],
+                "price": existing["current_price"], "site": existing["site"],
+                "image_url": existing["image_url"], "duplicate": True}
+
     cur = conn.execute(
         """INSERT INTO products (url, title, current_price, initial_price, currency, chat_id, site, image_url, last_checked)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -98,12 +109,26 @@ def add_product_manual(req: ManualProductRequest):
     )
     conn.commit()
     conn.close()
-    return {"id": product_id, "title": req.title, "price": req.price, "site": req.site, "image_url": req.image_url}
+    return {"id": product_id, "title": req.title, "price": req.price,
+            "site": req.site, "image_url": req.image_url}
 
 
 @app.post("/products")
 def add_product(req: AddProductRequest):
     from scraper import scrape_product
+    # Prevent duplicates
+    conn = get_db()
+    existing = conn.execute(
+        "SELECT * FROM products WHERE url = ? AND chat_id = ?",
+        (req.url, req.chat_id)
+    ).fetchone()
+    if existing:
+        conn.close()
+        return {"id": existing["id"], "title": existing["title"],
+                "price": existing["current_price"], "site": existing["site"],
+                "image_url": existing["image_url"], "duplicate": True}
+    conn.close()
+
     data = scrape_product(req.url)
     if not data:
         raise HTTPException(status_code=400, detail="Could not scrape product. Check the URL.")

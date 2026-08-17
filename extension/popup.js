@@ -138,53 +138,61 @@ async function trackProduct() {
   await backendTrack(url);
 }
 
-// Scrape price in the user's browser by fetching the page with browser credentials
+// Scrape price directly from the live page DOM via content script injection
 async function scrapeInBrowser(url) {
   try {
-    const resp = await fetch(url, {
-      credentials: "include",
-      headers: { "Accept": "text/html" },
+    // Get the active tab
+    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs && tabs[0];
+    if (!tab) return null;
+
+    // Inject a script into the live page to extract price from the rendered DOM
+    const results = await browser.tabs.executeScript(tab.id, {
+      code: `
+        (function() {
+          let price = null, title = null, image_url = null, site = "other";
+
+          if (location.href.includes("flipkart.com")) {
+            site = "flipkart";
+            // Selling price: div with BOTH Nx9bqj AND CxhGGd classes
+            const el = document.querySelector("div.Nx9bqj.CxhGGd")
+                     || document.querySelector("div._30jeq3._16Jk6d")
+                     || document.querySelector("div._30jeq3");
+            if (el) price = parseFloat(el.textContent.replace(/[^\\d.]/g, ""));
+
+            const titleEl = document.querySelector("span.VU-ZEz")
+                          || document.querySelector("span.B_NuCI")
+                          || document.querySelector("h1.yhB1nd");
+            title = titleEl ? titleEl.textContent.trim() : document.title;
+
+            const imgEl = document.querySelector("img.DByuf4") || document.querySelector("img._396cs4");
+            image_url = imgEl ? imgEl.src : null;
+
+          } else if (location.href.includes("amazon.")) {
+            site = "amazon";
+            const el = document.querySelector("span.a-price-whole")
+                     || document.querySelector("#priceblock_ourprice")
+                     || document.querySelector("#priceblock_dealprice")
+                     || document.querySelector("span.a-offscreen");
+            if (el) price = parseFloat(el.textContent.replace(/[^\\d.]/g, ""));
+
+            const titleEl = document.querySelector("span#productTitle");
+            title = titleEl ? titleEl.textContent.trim() : document.title;
+
+            const imgEl = document.querySelector("img#landingImage");
+            image_url = imgEl ? imgEl.src : null;
+          }
+
+          return { price, title, site, image_url };
+        })()
+      `
     });
-    const html = await resp.text();
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, "text/html");
 
-    let price = null, title = null, image_url = null, site = "other";
-
-    if (url.includes("flipkart.com")) {
-      site = "flipkart";
-      // Try CSS selectors
-      const priceEl = doc.querySelector("div.Nx9bqj") || doc.querySelector("div._30jeq3");
-      if (priceEl) price = parseFloat(priceEl.textContent.replace(/[^\d.]/g, ""));
-
-      // Try JSON in script tags
-      if (!price) {
-        for (const script of doc.querySelectorAll("script")) {
-          const t = script.textContent || "";
-          const m = t.match(/"(?:finalPrice|sellingPrice)"\s*:\s*\{[^}]*"value"\s*:\s*(\d+)/)
-                 || t.match(/"(?:finalPrice|sellingPrice)"\s*:\s*(\d+)/);
-          if (m) { price = parseFloat(m[1]); break; }
-        }
-      }
-
-      const titleEl = doc.querySelector("span.VU-ZEz") || doc.querySelector("span.B_NuCI") || doc.querySelector("h1");
-      title = titleEl ? titleEl.textContent.trim() : "Flipkart Product";
-      const imgEl = doc.querySelector("img.DByuf4") || doc.querySelector("img._396cs4");
-      image_url = imgEl ? imgEl.src : null;
-
-    } else if (url.includes("amazon.")) {
-      site = "amazon";
-      const priceEl = doc.querySelector("span.a-price-whole") || doc.querySelector("span.a-offscreen");
-      if (priceEl) price = parseFloat(priceEl.textContent.replace(/[^\d.]/g, ""));
-      const titleEl = doc.querySelector("span#productTitle");
-      title = titleEl ? titleEl.textContent.trim() : "Amazon Product";
-      const imgEl = doc.querySelector("img#landingImage");
-      image_url = imgEl ? imgEl.src : null;
-    }
-
-    if (!price) return null;
-    return { title, price, site, image_url, currency: "INR" };
+    const data = results && results[0];
+    if (!data || !data.price) return null;
+    return { ...data, currency: "INR" };
   } catch(e) {
+    console.error("scrapeInBrowser error:", e);
     return null;
   }
 }
@@ -240,13 +248,14 @@ async function backendTrack(url) {
 function showSuccess(data) {
   const siteLabel = { amazon: "🛒 Amazon", flipkart: "🛍️ Flipkart" }[data.site] || "🏪 " + data.site;
   const card = $("track-result");
+  const dupNote = data.duplicate ? "<div style='color:#856404;font-size:11px;margin-top:4px;'>⚠️ Already tracking this product</div>" : "";
   card.innerHTML =
     "<div class='product-title'>" + escHtml(data.title) + "</div>" +
     "<div class='product-price'>₹" + Number(data.price).toLocaleString("en-IN") + "</div>" +
-    "<div class='product-site'>" + siteLabel + "</div>";
+    "<div class='product-site'>" + siteLabel + "</div>" + dupNote;
   card.classList.remove("hidden", "error");
-  showToast("✅ Added!");
-  $("product-url").value = "";
+  showToast(data.duplicate ? "⚠️ Already tracking!" : "✅ Added!");
+  if (!data.duplicate) $("product-url").value = "";
 }
 
 function showError(msg) {
