@@ -117,43 +117,143 @@ async function trackProduct() {
     return;
   }
 
+  // For Flipkart/Amazon — scrape price in the browser via content script
+  if (url.includes("flipkart.com") || url.includes("amazon.")) {
+    setTracking(true);
+    $("track-result").classList.add("hidden");
+    try {
+      const data = await scrapeInBrowser(url);
+      if (data) {
+        await submitToBackend(url, data);
+        return;
+      }
+    } catch(e) {
+      // fall through to backend scrape
+    } finally {
+      setTracking(false);
+    }
+  }
+
+  // Generic fallback: let backend scrape
+  await backendTrack(url);
+}
+
+// Scrape price in the user's browser by fetching the page with browser credentials
+async function scrapeInBrowser(url) {
+  try {
+    const resp = await fetch(url, {
+      credentials: "include",
+      headers: { "Accept": "text/html" },
+    });
+    const html = await resp.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, "text/html");
+
+    let price = null, title = null, image_url = null, site = "other";
+
+    if (url.includes("flipkart.com")) {
+      site = "flipkart";
+      // Try CSS selectors
+      const priceEl = doc.querySelector("div.Nx9bqj") || doc.querySelector("div._30jeq3");
+      if (priceEl) price = parseFloat(priceEl.textContent.replace(/[^\d.]/g, ""));
+
+      // Try JSON in script tags
+      if (!price) {
+        for (const script of doc.querySelectorAll("script")) {
+          const t = script.textContent || "";
+          const m = t.match(/"(?:finalPrice|sellingPrice)"\s*:\s*\{[^}]*"value"\s*:\s*(\d+)/)
+                 || t.match(/"(?:finalPrice|sellingPrice)"\s*:\s*(\d+)/);
+          if (m) { price = parseFloat(m[1]); break; }
+        }
+      }
+
+      const titleEl = doc.querySelector("span.VU-ZEz") || doc.querySelector("span.B_NuCI") || doc.querySelector("h1");
+      title = titleEl ? titleEl.textContent.trim() : "Flipkart Product";
+      const imgEl = doc.querySelector("img.DByuf4") || doc.querySelector("img._396cs4");
+      image_url = imgEl ? imgEl.src : null;
+
+    } else if (url.includes("amazon.")) {
+      site = "amazon";
+      const priceEl = doc.querySelector("span.a-price-whole") || doc.querySelector("span.a-offscreen");
+      if (priceEl) price = parseFloat(priceEl.textContent.replace(/[^\d.]/g, ""));
+      const titleEl = doc.querySelector("span#productTitle");
+      title = titleEl ? titleEl.textContent.trim() : "Amazon Product";
+      const imgEl = doc.querySelector("img#landingImage");
+      image_url = imgEl ? imgEl.src : null;
+    }
+
+    if (!price) return null;
+    return { title, price, site, image_url, currency: "INR" };
+  } catch(e) {
+    return null;
+  }
+}
+
+async function submitToBackend(url, data) {
   setTracking(true);
   $("track-result").classList.add("hidden");
-
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 40000); // 40s timeout
+    const resp = await fetch(config.apiBase + "/products/manual", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url, chat_id: config.chatId,
+        title: data.title, price: data.price,
+        site: data.site, image_url: data.image_url,
+        currency: data.currency || "INR"
+      }),
+    });
+    const result = await resp.json();
+    if (!resp.ok) throw new Error(result.detail || "Failed");
+    showSuccess(result);
+  } catch(e) {
+    showError(e.message);
+  } finally {
+    setTracking(false);
+  }
+}
 
+async function backendTrack(url) {
+  setTracking(true);
+  $("track-result").classList.add("hidden");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 40000);
+  try {
     const resp = await fetch(config.apiBase + "/products", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: url, chat_id: config.chatId }),
+      body: JSON.stringify({ url, chat_id: config.chatId }),
       signal: controller.signal,
     });
     clearTimeout(timeout);
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || "Failed to track.");
-
-    const siteLabel = { amazon: "🛒 Amazon", flipkart: "🛍️ Flipkart" }[data.site] || "🏪 " + data.site;
-    const card = $("track-result");
-    card.innerHTML =
-      "<div class='product-title'>" + escHtml(data.title) + "</div>" +
-      "<div class='product-price'>₹" + Number(data.price).toLocaleString("en-IN") + "</div>" +
-      "<div class='product-site'>" + siteLabel + "</div>";
-    card.classList.remove("hidden", "error");
-    showToast("✅ Added!");
-    $("product-url").value = "";
-  } catch (err) {
-    const msg = err.name === "AbortError"
-      ? "Request timed out. The product page took too long to load."
-      : err.message;
-    const card = $("track-result");
-    card.innerHTML = "<div class='error-msg'>❌ " + escHtml(msg) + "</div>";
-    card.classList.remove("hidden");
-    card.classList.add("error");
+    showSuccess(data);
+  } catch(err) {
+    const msg = err.name === "AbortError" ? "Request timed out." : err.message;
+    showError(msg);
   } finally {
     setTracking(false);
   }
+}
+
+function showSuccess(data) {
+  const siteLabel = { amazon: "🛒 Amazon", flipkart: "🛍️ Flipkart" }[data.site] || "🏪 " + data.site;
+  const card = $("track-result");
+  card.innerHTML =
+    "<div class='product-title'>" + escHtml(data.title) + "</div>" +
+    "<div class='product-price'>₹" + Number(data.price).toLocaleString("en-IN") + "</div>" +
+    "<div class='product-site'>" + siteLabel + "</div>";
+  card.classList.remove("hidden", "error");
+  showToast("✅ Added!");
+  $("product-url").value = "";
+}
+
+function showError(msg) {
+  const card = $("track-result");
+  card.innerHTML = "<div class='error-msg'>❌ " + escHtml(msg) + "</div>";
+  card.classList.remove("hidden");
+  card.classList.add("error");
 }
 
 function setTracking(on) {

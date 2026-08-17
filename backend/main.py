@@ -70,6 +70,37 @@ def root():
     return {"status": "Price Tracker API running"}
 
 
+class ManualProductRequest(BaseModel):
+    url: str
+    chat_id: str
+    title: str
+    price: float
+    site: str
+    image_url: Optional[str] = None
+    currency: str = "INR"
+
+
+@app.post("/products/manual")
+def add_product_manual(req: ManualProductRequest):
+    """Add a product with pre-scraped data (used by the browser extension)."""
+    conn = get_db()
+    cur = conn.execute(
+        """INSERT INTO products (url, title, current_price, initial_price, currency, chat_id, site, image_url, last_checked)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (req.url, req.title, req.price, req.price,
+         req.currency, req.chat_id, req.site,
+         req.image_url, datetime.utcnow().isoformat())
+    )
+    product_id = cur.lastrowid
+    conn.execute(
+        "INSERT INTO price_history (product_id, price) VALUES (?, ?)",
+        (product_id, req.price)
+    )
+    conn.commit()
+    conn.close()
+    return {"id": product_id, "title": req.title, "price": req.price, "site": req.site, "image_url": req.image_url}
+
+
 @app.post("/products")
 def add_product(req: AddProductRequest):
     from scraper import scrape_product
