@@ -44,6 +44,15 @@
     }
   ],
 
+  "commands": {
+    "_execute_browser_action": {
+      "suggested_key": {
+        "default": "Alt+P"
+      },
+      "description": "Open Price Tracker"
+    }
+  },
+
   "browser_specific_settings": {
     "gecko": {
       "id": "price-tracker@extension",
