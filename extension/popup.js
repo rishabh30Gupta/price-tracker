@@ -45,11 +45,17 @@ function saveConfig(chatId, apiBase) {
   try { browser.storage.local.set({ chatId, apiBase }); } catch(e) {}
 }
 
-// --- Auto-fill URL ---
+// --- Auto-fill URL — only on actual product pages ---
 async function autoFillCurrentTab() {
   try {
     const tabs = await browser.tabs.query({});
-    const productTab = tabs.find(t => t.url && (t.url.includes("amazon.") || t.url.includes("flipkart.com")));
+    const productTab = tabs.find(t => {
+      if (!t.url) return false;
+      const u = t.url;
+      // Only actual product pages, not search/category pages
+      return (u.includes("flipkart.com") && u.includes("/p/")) ||
+             (u.includes("amazon.") && (u.includes("/dp/") || u.includes("/gp/product/")));
+    });
     if (productTab) $("product-url").value = productTab.url;
   } catch(e) {}
 }
@@ -160,20 +166,22 @@ async function scrapeInBrowser(url) {
             }
           }
 
-          // Fallback: scan all text nodes for ₹ pattern and take the first reasonable price
+          // Fallback: find the largest-font ₹ element on page (that's the selling price)
           if (!price) {
-            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-            const prices = [];
-            while (walker.nextNode()) {
-              const text = walker.currentNode.textContent.trim();
-              const m = text.match(/^₹([\\d,]+)$/);
-              if (m) {
-                const val = parseFloat(m[1].replace(/,/g, ""));
-                if (val > 100) prices.push(val);
+            let maxSize = 0;
+            document.querySelectorAll("*").forEach(el => {
+              if (el.children.length === 0 && el.textContent.includes("₹")) {
+                const txt = el.textContent.trim();
+                const m = txt.match(/^₹([\\d,]+)$/);
+                if (m) {
+                  const val = parseFloat(m[1].replace(/,/g, ""));
+                  if (val > 1000) { // skip tiny values like ₹5 off coupons
+                    const fs = parseFloat(window.getComputedStyle(el).fontSize) || 0;
+                    if (fs > maxSize) { maxSize = fs; price = val; }
+                  }
+                }
               }
-            }
-            // Sort ascending and take the smallest reasonable price (selling price < MRP)
-            if (prices.length) price = prices.sort((a,b)=>a-b)[0];
+            });
           }
 
           const titleEl = document.querySelector("span.VU-ZEz")
