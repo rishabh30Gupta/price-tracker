@@ -5,14 +5,13 @@ let config = { chatId: "", apiBase: "" };
 
 // --- Init ---
 document.addEventListener("DOMContentLoaded", () => {
-  config = getConfig(); // always has values due to DEFAULTS
+  config = getConfig();
   showScreen("main-screen");
   autoFillCurrentTab();
   loadProducts();
   bindEvents();
 });
 
-// --- Screen / Tab helpers ---
 function showScreen(id) {
   document.querySelectorAll(".screen").forEach((s) => s.classList.add("hidden"));
   $(id).classList.remove("hidden");
@@ -27,13 +26,12 @@ function showTab(name) {
   if (name === "list") loadProducts();
 }
 
-// --- Defaults (pre-filled so you never have to type them again) ---
+// --- Defaults ---
 const DEFAULTS = {
   chatId: "897964528",
   apiBase: "https://price-tracker-production-1fe4.up.railway.app",
 };
 
-// --- Storage — uses localStorage with DEFAULTS fallback ---
 function getConfig() {
   return {
     chatId: localStorage.getItem("pt_chatId") || DEFAULTS.chatId,
@@ -44,30 +42,16 @@ function getConfig() {
 function saveConfig(chatId, apiBase) {
   localStorage.setItem("pt_chatId", chatId);
   localStorage.setItem("pt_apiBase", apiBase);
-  // Also try browser.storage but don't depend on it
-  try {
-    browser.storage.local.set({ chatId, apiBase });
-  } catch (e) {}
+  try { browser.storage.local.set({ chatId, apiBase }); } catch(e) {}
 }
 
 // --- Auto-fill URL ---
 async function autoFillCurrentTab() {
   try {
-    const data = await browser.storage.local.get(["pendingUrl"]);
-    if (data.pendingUrl) {
-      $("product-url").value = data.pendingUrl;
-      await browser.storage.local.remove("pendingUrl");
-      showTab("track");
-      return;
-    }
-    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-    const tab = tabs && tabs[0];
-    if (tab && tab.url && (tab.url.includes("amazon.") || tab.url.includes("flipkart.com"))) {
-      $("product-url").value = tab.url;
-    }
-  } catch (e) {
-    // non-critical, ignore
-  }
+    const tabs = await browser.tabs.query({});
+    const productTab = tabs.find(t => t.url && (t.url.includes("amazon.") || t.url.includes("flipkart.com")));
+    if (productTab) $("product-url").value = productTab.url;
+  } catch(e) {}
 }
 
 // --- Bind Events ---
@@ -107,17 +91,12 @@ async function trackProduct() {
   if (!url) { showToast("Paste a product URL first."); return; }
   if (!url.startsWith("http")) { showToast("Invalid URL."); return; }
 
-  // Short/share URLs aren't scrapable — ask for the full product page URL
   if (url.includes("dl.flipkart.com") || url.includes("fkrt.it") ||
       url.includes("amzn.in") || url.includes("amzn.to")) {
-    const card = $("track-result");
-    card.innerHTML = "<div class='error-msg'>⚠️ Short/share URLs aren't supported.<br><br>Please open the product in your browser and copy the <b>full URL</b> from the address bar (it should start with <b>amazon.in/dp/</b> or <b>flipkart.com/...</b>)</div>";
-    card.classList.remove("hidden");
-    card.classList.add("error");
+    showError("⚠️ Short/share URLs aren't supported. Open the product page and copy the full URL from the address bar.");
     return;
   }
 
-  // For Flipkart/Amazon — scrape price in the browser via content script
   if (url.includes("flipkart.com") || url.includes("amazon.")) {
     setTracking(true);
     $("track-result").classList.add("hidden");
@@ -125,86 +104,118 @@ async function trackProduct() {
       const data = await scrapeInBrowser(url);
       if (data && data.price) {
         await submitToBackend(url, data);
-        return;
       } else {
-        showError("Could not read price from page. Make sure the product page is fully loaded, then try again.");
-        return;
+        showError("Could not read price. Make sure the product page is open and fully loaded.");
       }
     } catch(e) {
-      console.error("scrapeInBrowser failed:", e);
-      showError("Could not read price: " + e.message);
-      return;
+      showError(e.message || "Could not read price from page.");
     } finally {
       setTracking(false);
     }
+    return;
   }
 
-  // Generic fallback: let backend scrape
   await backendTrack(url);
 }
 
-// Scrape price directly from the live page DOM via content script injection
+// --- Scrape from live tab DOM (finds tab by URL, not active state) ---
 async function scrapeInBrowser(url) {
-  try {
-    // Get the active tab
-    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-    const tab = tabs && tabs[0];
-    if (!tab) return null;
+  // Find the tab that matches the product URL
+  const allTabs = await browser.tabs.query({});
+  const normalizedUrl = url.split("?")[0].split("#")[0]; // strip query params
+  let tab = allTabs.find(t => t.url && t.url.startsWith(normalizedUrl));
 
-    // Inject a script into the live page to extract price from the rendered DOM
-    const results = await browser.tabs.executeScript(tab.id, {
-      code: `
-        (function() {
-          let price = null, title = null, image_url = null, site = "other";
+  // Fallback: find any flipkart/amazon tab
+  if (!tab) {
+    if (url.includes("flipkart.com")) {
+      tab = allTabs.find(t => t.url && t.url.includes("flipkart.com"));
+    } else if (url.includes("amazon.")) {
+      tab = allTabs.find(t => t.url && t.url.includes("amazon."));
+    }
+  }
 
-          if (location.href.includes("flipkart.com")) {
-            site = "flipkart";
-            // Selling price: div with BOTH Nx9bqj AND CxhGGd classes
-            const el = document.querySelector("div.Nx9bqj.CxhGGd")
-                     || document.querySelector("div._30jeq3._16Jk6d")
-                     || document.querySelector("div._30jeq3");
-            if (el) price = parseFloat(el.textContent.replace(/[^\\d.]/g, ""));
+  if (!tab) throw new Error("Product tab not found. Make sure the product page is open in a tab.");
 
-            const titleEl = document.querySelector("span.VU-ZEz")
-                          || document.querySelector("span.B_NuCI")
-                          || document.querySelector("h1.yhB1nd");
-            title = titleEl ? titleEl.textContent.trim() : document.title;
+  const results = await browser.tabs.executeScript(tab.id, {
+    code: `
+      (function() {
+        let price = null, title = null, image_url = null, site = "other";
 
-            const imgEl = document.querySelector("img.DByuf4") || document.querySelector("img._396cs4");
-            image_url = imgEl ? imgEl.src : null;
+        if (location.href.includes("flipkart.com")) {
+          site = "flipkart";
 
-          } else if (location.href.includes("amazon.")) {
-            site = "amazon";
-            const el = document.querySelector("span.a-price-whole")
-                     || document.querySelector("#priceblock_ourprice")
-                     || document.querySelector("#priceblock_dealprice")
-                     || document.querySelector("span.a-offscreen");
-            if (el) price = parseFloat(el.textContent.replace(/[^\\d.]/g, ""));
-
-            const titleEl = document.querySelector("span#productTitle");
-            title = titleEl ? titleEl.textContent.trim() : document.title;
-
-            const imgEl = document.querySelector("img#landingImage");
-            image_url = imgEl ? imgEl.src : null;
+          // Try specific selling price selectors (both classes = selling price, single class = MRP)
+          const priceSelectors = [
+            "div.Nx9bqj.CxhGGd",
+            "div._30jeq3._16Jk6d",
+            "div._30jeq3",
+            "div.hl05eU div.Nx9bqj",
+            "div.CEmiEU div.Nx9bqj"
+          ];
+          for (const sel of priceSelectors) {
+            const el = document.querySelector(sel);
+            if (el) {
+              const val = parseFloat(el.textContent.replace(/[^\\d]/g, ""));
+              if (val > 0) { price = val; break; }
+            }
           }
 
-          return { price, title, site, image_url };
-        })()
-      `
-    });
+          // Fallback: scan all text nodes for ₹ pattern and take the first reasonable price
+          if (!price) {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            const prices = [];
+            while (walker.nextNode()) {
+              const text = walker.currentNode.textContent.trim();
+              const m = text.match(/^₹([\\d,]+)$/);
+              if (m) {
+                const val = parseFloat(m[1].replace(/,/g, ""));
+                if (val > 100) prices.push(val);
+              }
+            }
+            // Sort ascending and take the smallest reasonable price (selling price < MRP)
+            if (prices.length) price = prices.sort((a,b)=>a-b)[0];
+          }
 
-    const data = results && results[0];
-    if (!data || !data.price) return null;
-    return { ...data, currency: "INR" };
-  } catch(e) {
-    console.error("scrapeInBrowser error:", e);
-    return null;
-  }
+          const titleEl = document.querySelector("span.VU-ZEz")
+                        || document.querySelector("span.B_NuCI")
+                        || document.querySelector("h1");
+          title = titleEl ? titleEl.textContent.trim() : document.title.split("|")[0].trim();
+          const imgEl = document.querySelector("img.DByuf4") || document.querySelector("img._396cs4");
+          image_url = imgEl ? imgEl.src : null;
+
+        } else if (location.href.includes("amazon.")) {
+          site = "amazon";
+          const priceSelectors = [
+            "span.a-price-whole",
+            "#priceblock_ourprice",
+            "#priceblock_dealprice",
+            "#price_inside_buybox",
+            ".a-price .a-offscreen"
+          ];
+          for (const sel of priceSelectors) {
+            const el = document.querySelector(sel);
+            if (el) {
+              const val = parseFloat(el.textContent.replace(/[^\\d.]/g, ""));
+              if (val > 0) { price = val; break; }
+            }
+          }
+          const titleEl = document.querySelector("span#productTitle");
+          title = titleEl ? titleEl.textContent.trim() : document.title;
+          const imgEl = document.querySelector("img#landingImage");
+          image_url = imgEl ? imgEl.src : null;
+        }
+
+        return { price, title, site, image_url };
+      })()
+    `
+  });
+
+  const data = results && results[0];
+  if (!data || !data.price) return null;
+  return { ...data, currency: "INR" };
 }
 
 async function submitToBackend(url, data) {
-  setTracking(true);
-  $("track-result").classList.add("hidden");
   try {
     const resp = await fetch(config.apiBase + "/products/manual", {
       method: "POST",
@@ -221,8 +232,6 @@ async function submitToBackend(url, data) {
     showSuccess(result);
   } catch(e) {
     showError(e.message);
-  } finally {
-    setTracking(false);
   }
 }
 
@@ -230,7 +239,7 @@ async function backendTrack(url) {
   setTracking(true);
   $("track-result").classList.add("hidden");
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 40000);
+  const tid = setTimeout(() => controller.abort(), 40000);
   try {
     const resp = await fetch(config.apiBase + "/products", {
       method: "POST",
@@ -238,13 +247,12 @@ async function backendTrack(url) {
       body: JSON.stringify({ url, chat_id: config.chatId }),
       signal: controller.signal,
     });
-    clearTimeout(timeout);
+    clearTimeout(tid);
     const data = await resp.json();
-    if (!resp.ok) throw new Error(data.detail || "Failed to track.");
+    if (!resp.ok) throw new Error(data.detail || "Failed");
     showSuccess(data);
-  } catch(err) {
-    const msg = err.name === "AbortError" ? "Request timed out." : err.message;
-    showError(msg);
+  } catch(e) {
+    showError(e.name === "AbortError" ? "Request timed out." : e.message);
   } finally {
     setTracking(false);
   }
@@ -252,8 +260,8 @@ async function backendTrack(url) {
 
 function showSuccess(data) {
   const siteLabel = { amazon: "🛒 Amazon", flipkart: "🛍️ Flipkart" }[data.site] || "🏪 " + data.site;
-  const card = $("track-result");
   const dupNote = data.duplicate ? "<div style='color:#856404;font-size:11px;margin-top:4px;'>⚠️ Already tracking this product</div>" : "";
+  const card = $("track-result");
   card.innerHTML =
     "<div class='product-title'>" + escHtml(data.title) + "</div>" +
     "<div class='product-price'>₹" + Number(data.price).toLocaleString("en-IN") + "</div>" +
@@ -281,23 +289,17 @@ async function loadProducts() {
   const listEl = $("products-list");
   const emptyEl = $("products-empty");
   const loadingEl = $("products-loading");
-
   listEl.innerHTML = "";
   emptyEl.classList.add("hidden");
   loadingEl.classList.remove("hidden");
-
   try {
     const resp = await fetch(config.apiBase + "/products/" + encodeURIComponent(config.chatId));
     if (!resp.ok) throw new Error("API error");
     const products = await resp.json();
     loadingEl.classList.add("hidden");
-
-    if (!products.length) {
-      emptyEl.classList.remove("hidden");
-      return;
-    }
+    if (!products.length) { emptyEl.classList.remove("hidden"); return; }
     products.forEach((p) => listEl.appendChild(buildCard(p)));
-  } catch (e) {
+  } catch(e) {
     loadingEl.classList.add("hidden");
     listEl.innerHTML = "<p style='color:#dc3545;font-size:13px;padding:8px 0'>Could not load. Check backend URL in settings.</p>";
   }
@@ -308,19 +310,16 @@ function buildCard(p) {
   div.className = "product-item";
   const emoji = { amazon: "🛒", flipkart: "🛍️" }[p.site] || "🏪";
   const price = "₹" + Number(p.current_price).toLocaleString("en-IN");
-  const strikethrough = (p.initial_price && p.initial_price !== p.current_price)
-    ? " <span class='initial-price'>₹" + Number(p.initial_price).toLocaleString("en-IN") + "</span>"
-    : "";
-
+  const strike = (p.initial_price && p.initial_price !== p.current_price)
+    ? " <span class='initial-price'>₹" + Number(p.initial_price).toLocaleString("en-IN") + "</span>" : "";
   div.innerHTML =
-    (p.image_url ? "<img class='thumb' src='" + escHtml(p.image_url) + "' alt='' onerror=\"this.style.display='none'\" />" : "") +
+    (p.image_url ? "<img class='thumb' src='" + escHtml(p.image_url) + "' alt='' onerror=\"this.style.display='none'\"/>" : "") +
     "<div class='info'>" +
       "<div class='name' title='" + escHtml(p.title) + "'>" + escHtml(p.title) + "</div>" +
-      "<div class='price'>" + price + strikethrough + "</div>" +
+      "<div class='price'>" + price + strike + "</div>" +
       "<div class='meta'>" + emoji + " " + escHtml(p.site) + " &nbsp;•&nbsp; ID: " + p.id + "</div>" +
     "</div>" +
     "<button class='remove-btn' title='Remove'>🗑</button>";
-
   div.querySelector(".remove-btn").addEventListener("click", () => removeProduct(p.id, div));
   return div;
 }
@@ -336,32 +335,21 @@ async function removeProduct(id, el) {
     if (!resp.ok) throw new Error();
     el.remove();
     showToast("🗑 Removed");
-    if (!$("products-list").children.length) {
-      $("products-empty").classList.remove("hidden");
-    }
+    if (!$("products-list").children.length) $("products-empty").classList.remove("hidden");
   } catch {
     el.style.opacity = "1";
     showToast("Could not remove. Try again.");
   }
 }
 
-// --- Toast ---
 function showToast(msg) {
   let t = document.querySelector(".toast");
-  if (!t) {
-    t = document.createElement("div");
-    t.className = "toast";
-    document.body.appendChild(t);
-  }
+  if (!t) { t = document.createElement("div"); t.className = "toast"; document.body.appendChild(t); }
   t.textContent = msg;
   t.classList.add("show");
   setTimeout(() => t.classList.remove("show"), 2500);
 }
 
 function escHtml(s) {
-  return String(s || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
