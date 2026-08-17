@@ -2,72 +2,139 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Price Tracker</title>
-  <link rel="stylesheet" href="popup.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 380px;
+      min-height: 500px;
+      font-family: sans-serif;
+      background: #f8f9fa;
+      color: #1a1a2e;
+      padding: 16px;
+    }
+    .hidden { display: none !important; }
+
+    /* Header */
+    .header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid #e9ecef; }
+    .header h1 { font-size: 18px; font-weight: 700; flex: 1; }
+    .icon-btn { background: none; border: none; cursor: pointer; font-size: 18px; padding: 4px; border-radius: 6px; }
+    .icon-btn:hover { background: #e9ecef; }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 4px; background: #e9ecef; border-radius: 8px; padding: 3px; margin-bottom: 16px; }
+    .tab { flex: 1; padding: 7px 12px; border: none; background: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; color: #6c757d; }
+    .tab.active { background: #fff; color: #1a1a2e; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+
+    /* Forms */
+    .form-group { margin-bottom: 14px; }
+    .form-group label { display: block; font-size: 12px; font-weight: 600; color: #495057; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .form-group input { width: 100%; padding: 9px 12px; border: 1.5px solid #dee2e6; border-radius: 8px; font-size: 13px; outline: none; background: #fff; }
+    .form-group input:focus { border-color: #4361ee; }
+    .form-group small { display: block; margin-top: 4px; font-size: 11px; color: #6c757d; }
+
+    /* Buttons */
+    .btn { width: 100%; padding: 10px 16px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .btn.primary { background: linear-gradient(135deg, #4361ee, #7209b7); color: #fff; }
+    .btn.primary:hover { opacity: 0.92; }
+    .btn.primary:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn.secondary { background: #e9ecef; color: #495057; margin-top: 10px; }
+
+    /* Spinner */
+    .spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Result card */
+    .result-card { margin-top: 12px; padding: 12px; background: #fff; border-radius: 10px; border: 1.5px solid #d4edda; }
+    .result-card.error { border-color: #f8d7da; }
+    .product-title { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+    .product-price { font-size: 18px; font-weight: 700; color: #198754; }
+    .product-site { font-size: 11px; color: #6c757d; margin-top: 4px; }
+    .error-msg { color: #842029; font-size: 13px; }
+
+    /* Product list */
+    #products-list { display: flex; flex-direction: column; gap: 10px; max-height: 340px; overflow-y: auto; }
+    .product-item { background: #fff; border-radius: 10px; padding: 12px; border: 1.5px solid #e9ecef; display: flex; gap: 10px; align-items: flex-start; }
+    .thumb { width: 48px; height: 48px; object-fit: contain; border-radius: 6px; flex-shrink: 0; }
+    .info { flex: 1; min-width: 0; }
+    .name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .price { font-size: 15px; font-weight: 700; color: #198754; margin: 3px 0; }
+    .initial-price { font-size: 12px; color: #adb5bd; text-decoration: line-through; margin-left: 6px; font-weight: 400; }
+    .meta { font-size: 11px; color: #6c757d; }
+    .remove-btn { background: none; border: none; cursor: pointer; font-size: 16px; padding: 2px 4px; color: #dc3545; flex-shrink: 0; }
+
+    /* States */
+    .loading-state, .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 0; gap: 8px; color: #6c757d; }
+    .loading-state .spinner { border-color: rgba(0,0,0,0.1); border-top-color: #4361ee; }
+    .empty-icon { font-size: 40px; }
+    .hint { font-size: 12px; color: #adb5bd; }
+
+    /* Toast */
+    .toast { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); background: #1a1a2e; color: #fff; padding: 8px 16px; border-radius: 8px; font-size: 12px; opacity: 0; transition: opacity 0.3s; white-space: nowrap; pointer-events: none; }
+    .toast.show { opacity: 1; }
+
+    /* subtitle */
+    .subtitle { color: #6c757d; margin-bottom: 16px; font-size: 13px; }
+  </style>
 </head>
 <body>
-  <div id="app">
-    <!-- Setup Screen -->
-    <div id="setup-screen" class="screen">
-      <div class="header">
-        <img src="icons/icon48.png" alt="logo" class="logo" />
-        <h1>Price Tracker</h1>
-      </div>
-      <p class="subtitle">Enter your Telegram Chat ID to get started.</p>
-      <div class="form-group">
-        <label for="chat-id-input">Telegram Chat ID</label>
-        <input type="text" id="chat-id-input" placeholder="e.g. 123456789" />
-        <small>Send /start to your bot and it will show your Chat ID.</small>
-      </div>
-      <div class="form-group">
-        <label for="api-url-input">Backend URL</label>
-        <input type="text" id="api-url-input" placeholder="https://your-app.railway.app" />
-      </div>
-      <button id="save-setup-btn" class="btn primary">Save & Continue</button>
+
+  <!-- Setup Screen -->
+  <div id="setup-screen">
+    <div class="header">
+      <h1>📈 Price Tracker</h1>
+    </div>
+    <p class="subtitle">Enter your details to get started.</p>
+    <div class="form-group">
+      <label for="chat-id-input">Telegram Chat ID</label>
+      <input type="text" id="chat-id-input" placeholder="e.g. 897964528" />
+      <small>Send /start to your bot to get your Chat ID.</small>
+    </div>
+    <div class="form-group">
+      <label for="api-url-input">Backend URL</label>
+      <input type="text" id="api-url-input" placeholder="https://your-app.railway.app" />
+    </div>
+    <button id="save-setup-btn" class="btn primary">Save &amp; Continue</button>
+  </div>
+
+  <!-- Main Screen -->
+  <div id="main-screen" class="hidden">
+    <div class="header">
+      <h1>📈 Price Tracker</h1>
+      <button id="settings-btn" class="icon-btn" title="Settings">⚙️</button>
     </div>
 
-    <!-- Main Screen -->
-    <div id="main-screen" class="screen hidden">
-      <div class="header">
-        <img src="icons/icon48.png" alt="logo" class="logo" />
-        <h1>Price Tracker</h1>
-        <button id="settings-btn" class="icon-btn" title="Settings">⚙️</button>
-      </div>
+    <div class="tabs">
+      <button class="tab active" data-tab="track">Track</button>
+      <button class="tab" data-tab="list">My Products</button>
+    </div>
 
-      <!-- Tab Bar -->
-      <div class="tabs">
-        <button class="tab active" data-tab="track">Track</button>
-        <button class="tab" data-tab="list">My Products</button>
+    <!-- Track Tab -->
+    <div id="tab-track">
+      <div class="form-group">
+        <label for="product-url">Product URL</label>
+        <input type="url" id="product-url" placeholder="Paste Amazon or Flipkart URL" />
       </div>
+      <button id="track-btn" class="btn primary">
+        <span id="track-btn-text">Track Price</span>
+        <span id="track-spinner" class="spinner hidden"></span>
+      </button>
+      <div id="track-result" class="result-card hidden"></div>
+    </div>
 
-      <!-- Track Tab -->
-      <div id="tab-track" class="tab-content">
-        <div class="form-group">
-          <label for="product-url">Product URL</label>
-          <input type="url" id="product-url" placeholder="Paste Amazon or Flipkart URL" />
-        </div>
-        <button id="track-btn" class="btn primary">
-          <span id="track-btn-text">Track Price</span>
-          <span id="track-spinner" class="spinner hidden"></span>
-        </button>
-        <div id="track-result" class="result-card hidden"></div>
+    <!-- List Tab -->
+    <div id="tab-list" class="hidden">
+      <div id="products-loading" class="loading-state">
+        <div class="spinner"></div>
+        <p>Loading...</p>
       </div>
-
-      <!-- List Tab -->
-      <div id="tab-list" class="tab-content hidden">
-        <div id="products-loading" class="loading-state">
-          <div class="spinner"></div>
-          <p>Loading...</p>
-        </div>
-        <div id="products-empty" class="empty-state hidden">
-          <div class="empty-icon">📭</div>
-          <p>No products tracked yet.</p>
-          <p class="hint">Add one from the Track tab!</p>
-        </div>
-        <div id="products-list"></div>
-        <button id="refresh-btn" class="btn secondary">🔄 Refresh</button>
+      <div id="products-empty" class="empty-state hidden">
+        <div class="empty-icon">📭</div>
+        <p>No products tracked yet.</p>
+        <p class="hint">Add one from the Track tab!</p>
       </div>
+      <div id="products-list"></div>
+      <button id="refresh-btn" class="btn secondary">🔄 Refresh</button>
     </div>
   </div>
 
