@@ -111,7 +111,19 @@ def send_telegram(message: str):
 
 
 # --- Scraper ---
-def scrape_price(url: str) -> dict | None:
+def scrape_price(url: str, retries: int = 2) -> dict | None:
+    for attempt in range(1, retries + 1):
+        try:
+            result = _scrape_once(url)
+            if result:
+                return result
+            logger.warning(f"Attempt {attempt}/{retries} returned no price for {url}")
+        except Exception as e:
+            logger.warning(f"Attempt {attempt}/{retries} failed for {url}: {e}")
+    return None
+
+
+def _scrape_once(url: str) -> dict | None:
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
@@ -127,8 +139,8 @@ def scrape_price(url: str) -> dict | None:
             # Block images/fonts to speed up
             page.route("**/*.{png,jpg,jpeg,gif,webp,woff,woff2,ttf}",
                        lambda r: r.abort())
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(3000)
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(4000)
 
             final_url = page.url
 
