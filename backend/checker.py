@@ -1,6 +1,7 @@
 """
-Price checker script — run by GitHub Actions every 6 hours.
-Checks all tracked products and sends Telegram alerts on price drops.
+Price checker — triggered by GitHub Actions every 6 hours via POST /check.
+Uses Playwright headless browser to scrape Flipkart & Amazon.
+Sends Telegram alerts on both price drops and price increases.
 """
 import sqlite3
 import os
@@ -13,7 +14,6 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.environ.get("DB_PATH", "tracker.db")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
 
 
 def send_telegram(chat_id: str, message: str):
@@ -29,6 +29,7 @@ def send_telegram(chat_id: str, message: str):
             "disable_web_page_preview": False,
         }, timeout=10)
         resp.raise_for_status()
+        logger.info(f"Telegram notification sent to {chat_id}")
     except Exception as e:
         logger.error(f"Telegram send failed: {e}")
 
@@ -39,7 +40,7 @@ def check_prices():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     products = conn.execute("SELECT * FROM products").fetchall()
-    logger.info(f"Checking {len(products)} products...")
+    logger.info(f"Starting price check for {len(products)} products...")
 
     for product in products:
         pid = product["id"]
@@ -48,17 +49,19 @@ def check_prices():
         chat_id = product["chat_id"]
         title = product["title"]
 
-        logger.info(f"Checking: {title} ({url})")
+        logger.info(f"[{pid}] Checking: {title[:50]}")
+
         data = scrape_product(url)
 
         if not data or data["price"] is None:
-            logger.warning(f"Could not scrape product {pid}")
+            logger.warning(f"[{pid}] Could not scrape — skipping")
             continue
 
         new_price = data["price"]
         now = datetime.utcnow().isoformat()
+        site_emoji = {"amazon": "🛒", "flipkart": "🛍️"}.get(data["site"], "🏪")
 
-        # Always record price history
+        # Always update DB
         conn.execute(
             "INSERT INTO price_history (product_id, price) VALUES (?, ?)",
             (pid, new_price)
@@ -70,21 +73,35 @@ def check_prices():
         conn.commit()
 
         if new_price < old_price:
-            drop = old_price - new_price
-            pct = (drop / old_price) * 100
-            site_emoji = {"amazon": "🛒", "flipkart": "🛍️"}.get(data["site"], "🏪")
+            diff = old_price - new_price
+            pct = (diff / old_price) * 100
             msg = (
-                f"{site_emoji} <b>Price Drop Alert!</b>\n\n"
+                f"{site_emoji} <b>Price Drop Alert! 🎉</b>\n\n"
                 f"<b>{data['title']}</b>\n\n"
-                f"💰 Old Price: <s>₹{old_price:,.0f}</s>\n"
-                f"🔥 New Price: <b>₹{new_price:,.0f}</b>\n"
-                f"📉 Saved: ₹{drop:,.0f} ({pct:.1f}% off)\n\n"
+                f"💰 Was: <s>₹{old_price:,.0f}</s>\n"
+                f"🔥 Now: <b>₹{new_price:,.0f}</b>\n"
+                f"📉 You save: ₹{diff:,.0f} ({pct:.1f}% off)\n\n"
                 f"🔗 <a href=\"{url}\">Buy Now</a>"
             )
             send_telegram(chat_id, msg)
-            logger.info(f"Alert sent to {chat_id} — drop ₹{drop:,.0f} on {title}")
+            logger.info(f"[{pid}] DROP ₹{old_price:,.0f} → ₹{new_price:,.0f} (-₹{diff:,.0f})")
+
+        elif new_price > old_price:
+            diff = new_price - old_price
+            pct = (diff / old_price) * 100
+            msg = (
+                f"{site_emoji} <b>Price Increase Alert! 📈</b>\n\n"
+                f"<b>{data['title']}</b>\n\n"
+                f"💰 Was: ₹{old_price:,.0f}\n"
+                f"📈 Now: <b>₹{new_price:,.0f}</b>\n"
+                f"⚠️ Increased by: ₹{diff:,.0f} (+{pct:.1f}%)\n\n"
+                f"🔗 <a href=\"{url}\">View Product</a>"
+            )
+            send_telegram(chat_id, msg)
+            logger.info(f"[{pid}] INCREASE ₹{old_price:,.0f} → ₹{new_price:,.0f} (+₹{diff:,.0f})")
+
         else:
-            logger.info(f"No drop for {title}: ₹{old_price} → ₹{new_price}")
+            logger.info(f"[{pid}] No change: ₹{new_price:,.0f}")
 
     conn.close()
     logger.info("Price check complete.")
