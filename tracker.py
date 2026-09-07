@@ -142,11 +142,6 @@ def _scrape_once(url: str) -> dict | None:
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(4000)
 
-            # Debug: log page title and first 200 chars to help diagnose bot blocks
-            logger.info(f"Page title: {page.title()[:80]}")
-            content = page.content()
-            logger.info(f"Page size: {len(content)} chars")
-
             final_url = page.url
 
             # Title
