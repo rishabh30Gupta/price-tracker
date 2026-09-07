@@ -140,7 +140,26 @@ def _scrape_once(url: str) -> dict | None:
             page.route("**/*.{png,jpg,jpeg,gif,webp,woff,woff2,ttf}",
                        lambda r: r.abort())
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(4000)
+
+            # Wait for actual price element to appear instead of fixed sleep
+            if "flipkart.com" in url:
+                try:
+                    # Wait for any of the known price selectors
+                    page.wait_for_selector(
+                        "div.Nx9bqj, div._30jeq3, div.CEmiEU",
+                        timeout=15000
+                    )
+                except Exception:
+                    # If selector never appears, wait a fixed time as fallback
+                    page.wait_for_timeout(6000)
+            else:
+                try:
+                    page.wait_for_selector(
+                        "span.a-price-whole, #priceblock_ourprice, #corePriceDisplay_desktop_feature_div",
+                        timeout=15000
+                    )
+                except Exception:
+                    page.wait_for_timeout(6000)
 
             final_url = page.url
 
