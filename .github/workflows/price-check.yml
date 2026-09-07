@@ -1,35 +1,52 @@
-name: Price Checker
+name: Price Tracker
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
-  workflow_dispatch:
+    - cron: "*/5 * * * *"   # every 5 minutes
+  workflow_dispatch:         # allow manual trigger from GitHub UI
 
 jobs:
   check-prices:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Trigger price check on backend
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-playwright-${{ runner.os }}
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-v1
+
+      - name: Install dependencies
         run: |
-          API="${API_BASE%/}"
-          echo "Triggering price check at $API/check"
-          STATUS=$(curl -s -o /tmp/response.txt -w "%{http_code}" \
-            -X POST "$API/check" \
-            -H "Content-Type: application/json" \
-            --max-time 300 \
-            --retry 3 \
-            --retry-delay 5)
-          echo "Response: $(cat /tmp/response.txt)"
-          echo "HTTP Status: $STATUS"
-          if [ -z "$STATUS" ] || [ "$STATUS" = "000" ]; then
-            echo "Could not reach backend at $API"
-            exit 1
-          fi
-          if [ "$STATUS" -ge 400 ]; then
-            echo "Price check failed with status $STATUS"
-            exit 1
-          fi
-          echo "Price check triggered successfully"
+          pip install playwright==1.44.0
+          playwright install chromium --with-deps
+
+      - name: Run price tracker
         env:
-          API_BASE: ${{ secrets.API_BASE }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python tracker.py
+
+      - name: Save updated prices cache
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add prices.json
+          git diff --cached --quiet || git commit -m "chore: update price cache [skip ci]"
+          git push

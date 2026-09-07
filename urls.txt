@@ -1,0 +1,7 @@
+# Add product URLs below — one per line
+# Lines starting with # are ignored
+# Example:
+# https://www.flipkart.com/apple-iphone-16-white-128-gb/p/itm7c0281cd247be
+# https://www.amazon.in/dp/B0XXXXXXXXX
+
+https://www.flipkart.com/apple-iphone-16-white-128-gb/p/itm7c0281cd247be
