@@ -36,7 +36,7 @@ jobs:
           key: playwright-chromium-${{ runner.os }}-v2
 
       - name: Install Python dependencies
-        run: pip install playwright==1.44.0
+        run: pip install playwright==1.44.0 requests==2.31.0
 
       - name: Install Playwright Chromium browser
         run: |
