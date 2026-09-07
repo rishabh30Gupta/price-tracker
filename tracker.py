@@ -9,14 +9,12 @@ Usage:
     python tracker.py
 
 Environment variables:
-    TELEGRAM_TOKEN  — bot token from @BotFather
+    TELEGRAM_TOKEN   — bot token from @BotFather
     TELEGRAM_CHAT_ID — your chat ID
 """
 
 import json
 import os
-import re
-import sys
 import logging
 from pathlib import Path
 
@@ -28,8 +26,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Config ---
-URLS_FILE   = Path(__file__).parent / "urls.txt"
-PRICES_FILE = Path(__file__).parent / "prices.json"
+URLS_FILE        = Path(__file__).parent / "urls.txt"
+PRICES_FILE      = Path(__file__).parent / "prices.json"
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "897964528")
 
@@ -39,8 +37,10 @@ UA = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
-# JS injected into the page to find the main selling price
-# Strategy: find the leaf element with a ₹/$ value and the largest font size
+# Block these resource types to load pages faster
+BLOCK_TYPES = {"image", "media", "font", "stylesheet"}
+
+# JS: find leaf element with largest font size containing ₹ value ≥ 1000
 PRICE_JS = (
     "() => {"
     "  var re = /^[\\u20b9$][0-9,]+$/;"
@@ -110,91 +110,101 @@ def send_telegram(message: str):
         logger.error(f"Telegram send failed: {e}")
 
 
-# --- Scraper ---
-def scrape_price(url: str, retries: int = 2) -> dict | None:
-    for attempt in range(1, retries + 1):
-        try:
-            result = _scrape_once(url)
-            if result:
-                return result
-            logger.warning(f"Attempt {attempt}/{retries} returned no price for {url}")
-        except Exception as e:
-            logger.warning(f"Attempt {attempt}/{retries} failed for {url}: {e}")
-    return None
+# --- Scraper (single browser instance for all URLs) ---
+def scrape_all(urls: list[str]) -> dict[str, dict | None]:
+    from playwright.sync_api import sync_playwright
 
-
-def _scrape_once(url: str) -> dict | None:
-    try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox",
-                      "--disable-dev-shm-usage", "--disable-gpu"],
-            )
-            page = browser.new_page(
-                user_agent=UA,
-                viewport={"width": 1280, "height": 800},
-            )
-            # Block images/fonts to speed up
-            page.route("**/*.{png,jpg,jpeg,gif,webp,woff,woff2,ttf}",
-                       lambda r: r.abort())
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
-
-            # Wait for actual price element to appear instead of fixed sleep
-            if "flipkart.com" in url:
+    results = {}
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-extensions",
+                "--disable-background-networking",
+            ],
+        )
+        for url in urls:
+            logger.info(f"Scraping: {url}")
+            result = None
+            for attempt in range(1, 3):  # 2 retries
                 try:
-                    # Wait for any of the known price selectors
-                    page.wait_for_selector(
-                        "div.Nx9bqj, div._30jeq3, div.CEmiEU",
-                        timeout=15000
-                    )
-                except Exception:
-                    # If selector never appears, wait a fixed time as fallback
-                    page.wait_for_timeout(6000)
-            else:
-                try:
-                    page.wait_for_selector(
-                        "span.a-price-whole, #priceblock_ourprice, #corePriceDisplay_desktop_feature_div",
-                        timeout=15000
-                    )
-                except Exception:
-                    page.wait_for_timeout(6000)
-
-            final_url = page.url
-
-            # Title
-            title = None
-            if "flipkart.com" in final_url:
-                for sel in ["span.VU-ZEz", "span.B_NuCI", "h1"]:
-                    el = page.query_selector(sel)
-                    if el:
-                        title = el.text_content().strip()
+                    result = _scrape_page(browser, url)
+                    if result:
                         break
-            elif "amazon." in final_url:
-                el = page.query_selector("span#productTitle")
+                    logger.warning(f"Attempt {attempt}/2 — no price found")
+                except Exception as e:
+                    logger.warning(f"Attempt {attempt}/2 failed: {e}")
+            results[url] = result
+        browser.close()
+    return results
+
+
+def _scrape_page(browser, url: str) -> dict | None:
+    page = browser.new_page(
+        user_agent=UA,
+        viewport={"width": 1280, "height": 800},
+    )
+    try:
+        # Block heavy resources — images, fonts, stylesheets, media
+        page.route("**/*", lambda route: (
+            route.abort() if route.request.resource_type in BLOCK_TYPES
+            else route.continue_()
+        ))
+
+        # Use "commit" — fires as soon as the server responds (faster than domcontentloaded)
+        page.goto(url, wait_until="commit", timeout=60000)
+
+        # Wait for price element (up to 20s) — much more reliable than fixed sleep
+        if "flipkart.com" in url:
+            try:
+                page.wait_for_selector("div.Nx9bqj, div._30jeq3, div.CEmiEU", timeout=20000)
+            except Exception:
+                pass
+        elif "amazon." in url:
+            try:
+                page.wait_for_selector(
+                    "span.a-price-whole, #priceblock_ourprice, #corePriceDisplay_desktop_feature_div",
+                    timeout=20000
+                )
+            except Exception:
+                pass
+
+        final_url = page.url
+
+        # Title
+        title = None
+        if "flipkart.com" in final_url:
+            for sel in ["span.VU-ZEz", "span.B_NuCI", "h1"]:
+                el = page.query_selector(sel)
                 if el:
                     title = el.text_content().strip()
-            title = title or page.title().split("|")[0].strip()
+                    break
+        elif "amazon." in final_url:
+            el = page.query_selector("span#productTitle")
+            if el:
+                title = el.text_content().strip()
+        title = title or page.title().split("|")[0].strip()
 
-            # Price — largest rupee font on page = selling price
-            price = page.evaluate(PRICE_JS)
-            browser.close()
+        # Price
+        price = page.evaluate(PRICE_JS)
 
-            if not price:
-                logger.warning(f"No price found for {url}")
-                return None
+        if not price:
+            logger.warning(f"No price found for {url}")
+            return None
 
-            site = (
-                "flipkart" if "flipkart.com" in final_url
-                else "amazon" if "amazon." in final_url
-                else "other"
-            )
-            return {"title": title, "price": float(price), "site": site}
+        site = (
+            "flipkart" if "flipkart.com" in final_url
+            else "amazon" if "amazon." in final_url
+            else "other"
+        )
+        return {"title": title, "price": float(price), "site": site}
 
-    except Exception as e:
-        logger.error(f"Scrape error for {url}: {e}")
-        return None
+    finally:
+        page.close()
 
 
 # --- Main ---
@@ -207,9 +217,9 @@ def main():
     prices = load_prices()
     logger.info(f"Checking {len(urls)} product(s)...")
 
-    for url in urls:
-        logger.info(f"Scraping: {url}")
-        data = scrape_price(url)
+    results = scrape_all(urls)
+
+    for url, data in results.items():
         if not data:
             logger.warning(f"Skipping {url} — could not scrape")
             continue
@@ -222,7 +232,6 @@ def main():
         logger.info(f"  {title[:60]} → ₹{new_price:,.0f}")
 
         if url not in prices:
-            # First time tracking — save and notify
             prices[url] = new_price
             msg = (
                 f"{emoji} <b>Now Tracking!</b>\n\n"
