@@ -98,6 +98,7 @@ def fetch_html(url: str) -> str | None:
             timeout=35,
         )
         html = result.stdout.decode("utf-8", errors="replace")
+        logger.info(f"curl returned {len(html):,} chars, stderr: {result.stderr.decode()[:200]}")
         return html if len(html) > 10000 else None
     except Exception as e:
         logger.error(f"curl failed for {url}: {e}")
