@@ -1,9 +1,8 @@
 name: Price Tracker
 
 on:
-  schedule:
-    - cron: "0 * * * *"   # every hour
-  workflow_dispatch:       # allow manual trigger from GitHub UI
+  workflow_dispatch:   # manual trigger only — Flipkart blocks GH Actions IPs
+                       # Run tracker.py locally via cron instead
 
 permissions:
   contents: write
