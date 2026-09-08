@@ -2,8 +2,8 @@ name: Price Tracker
 
 on:
   schedule:
-    - cron: "0 * * * *"    # every hour
-  workflow_dispatch:         # allow manual trigger from GitHub UI
+    - cron: "0 * * * *"   # every hour
+  workflow_dispatch:       # allow manual trigger from GitHub UI
 
 permissions:
   contents: write
@@ -22,44 +22,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-playwright-${{ runner.os }}-py311
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-v2
-
-      - name: Install Python dependencies
-        run: pip install playwright==1.44.0 requests==2.31.0
-
-      - name: Install Playwright Chromium browser
-        run: |
-          # Install system deps manually (Ubuntu Noble renamed libasound2 → libasound2t64)
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            libasound2t64 \
-            libatk-bridge2.0-0 \
-            libatk1.0-0 \
-            libcups2 \
-            libdrm2 \
-            libgbm1 \
-            libgtk-3-0 \
-            libnspr4 \
-            libnss3 \
-            libxcomposite1 \
-            libxdamage1 \
-            libxfixes3 \
-            libxkbcommon0 \
-            libxrandr2 \
-            xdg-utils
-          # Install chromium without --with-deps (we handled deps above)
-          playwright install chromium
 
       - name: Run price tracker
         env:

@@ -2,16 +2,17 @@
 """
 Price Tracker
 -------------
-Reads URLs from urls.txt, fetches HTML via requests (fast, no browser network),
-evaluates JS price extraction via Playwright on the fetched HTML,
-compares with cached prices in prices.json, sends Telegram alerts on changes.
+Reads URLs from urls.txt, fetches HTML via requests,
+extracts price from embedded JSON data in the page,
+compares with cached prices in prices.json,
+sends Telegram alerts on price changes.
 """
 
 import json
 import os
 import re
 import logging
-import requests
+import subprocess
 from pathlib import Path
 
 logging.basicConfig(
@@ -26,37 +27,6 @@ URLS_FILE        = Path(__file__).parent / "urls.txt"
 PRICES_FILE      = Path(__file__).parent / "prices.json"
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "897964528")
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-IN,en;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Referer": "https://www.google.com/",
-    "DNT": "1",
-}
-
-# JS to extract price from rendered HTML — finds largest ₹ font element
-PRICE_JS = (
-    "() => {"
-    "  var re = /^[\\u20b9$][0-9,]+$/;"
-    "  var best = null, bestSize = 0;"
-    "  document.querySelectorAll('*').forEach(function(el) {"
-    "    var t = el.textContent.trim();"
-    "    if (re.test(t) && el.children.length === 0) {"
-    "      var val = parseFloat(t.replace(/[^0-9]/g, ''));"
-    "      if (val < 1000) return;"
-    "      var fs = parseFloat(window.getComputedStyle(el).fontSize) || 0;"
-    "      if (fs > bestSize) { bestSize = fs; best = val; }"
-    "    }"
-    "  });"
-    "  return best;"
-    "}"
-)
 
 
 # --- Helpers ---
@@ -110,113 +80,125 @@ def send_telegram(message: str):
         logger.error(f"Telegram send failed: {e}")
 
 
-# --- Fetch HTML via requests (bypasses Playwright network timeout issues) ---
-def fetch_html(url: str) -> tuple[str, str] | None:
-    """Returns (html, final_url) or None on failure."""
+def fetch_html(url: str) -> str | None:
+    """Use curl — proven to work from GitHub Actions with these exact flags."""
     try:
-        session = requests.Session()
-        # Visit homepage first to get cookies (helps bypass bot checks)
-        base = "https://www.flipkart.com" if "flipkart" in url else "https://www.amazon.in"
-        try:
-            session.get(base, headers=HEADERS, timeout=15)
-        except Exception:
-            pass
-        resp = session.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
-        resp.raise_for_status()
-        return resp.text, resp.url
+        result = subprocess.run(
+            [
+                "curl", "-s", "--compressed",
+                "-L",                          # follow redirects
+                "--max-time", "30",
+                "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "-H", "Accept-Language: en-IN,en;q=0.9",
+                "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "-H", "Referer: https://www.google.com/",
+                url,
+            ],
+            capture_output=True,
+            timeout=35,
+        )
+        html = result.stdout.decode("utf-8", errors="replace")
+        return html if len(html) > 10000 else None
     except Exception as e:
-        logger.error(f"fetch_html failed for {url}: {e}")
+        logger.error(f"curl failed for {url}: {e}")
         return None
 
 
-# --- Parse price from HTML using Playwright's JS engine ---
-def parse_price_from_html(html: str, url: str) -> dict | None:
-    try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox",
-                      "--disable-dev-shm-usage", "--disable-gpu"],
-            )
-            page = browser.new_page(
-                user_agent=HEADERS["User-Agent"],
-                viewport={"width": 1280, "height": 800},
-            )
-            # Set content directly — no network call from browser
-            page.set_content(html, timeout=30000)
+def extract_price(html: str, url: str) -> dict | None:
+    """Extract price and title from embedded JSON in the HTML."""
 
-            # Title
-            title = None
-            if "flipkart.com" in url:
-                for sel in ["span.VU-ZEz", "span.B_NuCI", "h1"]:
-                    el = page.query_selector(sel)
-                    if el:
-                        title = el.text_content().strip()
-                        break
-            elif "amazon." in url:
-                el = page.query_selector("span#productTitle")
-                if el:
-                    title = el.text_content().strip()
-            title = title or page.title().split("|")[0].strip()
-
-            # Price via JS
-            price = page.evaluate(PRICE_JS)
-            browser.close()
-
-            if not price:
-                # Fallback: regex on raw HTML
-                price = _regex_price(html, url)
-
-            if not price:
-                return None
-
-            site = (
-                "flipkart" if "flipkart.com" in url
-                else "amazon" if "amazon." in url
-                else "other"
-            )
-            return {"title": title, "price": float(price), "site": site}
-
-    except Exception as e:
-        logger.error(f"parse_price_from_html error: {e}")
-        return None
-
-
-def _regex_price(html: str, url: str) -> float | None:
-    """Fallback price extraction using regex on raw HTML."""
     if "flipkart.com" in url:
-        # Flipkart JSON: {"finalPrice":{"value":67900
-        m = re.search(r'"finalPrice"\s*:\s*\{"value"\s*:\s*(\d+)', html)
+        # Flipkart embeds product data as JSON in a <script> tag
+        # Pattern: "price":67900 (the selling price appears as a standalone number)
+        price = None
+
+        # Try: {"price":NNNNN (most reliable — appears near product data)
+        matches = re.findall(r'"price"\s*:\s*(\d{4,6})', html)
+        if matches:
+            # Filter to plausible phone/product price range (1000–200000)
+            candidates = [int(x) for x in matches if 1000 <= int(x) <= 200000]
+            if candidates:
+                # Most frequent value = selling price (appears multiple times in JSON)
+                from collections import Counter
+                price = Counter(candidates).most_common(1)[0][0]
+
+        # Fallback: finalPrice JSON
+        if not price:
+            m = re.search(r'"finalPrice"\s*:\s*\{"value"\s*:\s*(\d+)', html)
+            if m:
+                price = int(m.group(1))
+
+        # Title: og:title meta tag
+        title_m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\'](.*?)["\']', html)
+        if not title_m:
+            title_m = re.search(r'<title>(.*?)</title>', html)
+        title = title_m.group(1).strip() if title_m else "Flipkart Product"
+        title = re.sub(r'\s*[\|–-]\s*.*$', '', title).strip()  # remove "| Flipkart" suffix
+
+        if not price:
+            return None
+        return {"title": title, "price": float(price), "site": "flipkart"}
+
+    elif "amazon." in url:
+        price = None
+
+        # Amazon: "priceAmount":NNNNN or "price":"1,23,456"
+        m = re.search(r'"priceAmount"\s*:\s*([\d.]+)', html)
         if m:
-            return float(m.group(1))
-    # Generic: find ₹ followed by digits
-    matches = re.findall(r'₹\s*([\d,]+)', html)
-    prices = sorted(set(
-        float(p.replace(",", "")) for p in matches
-        if float(p.replace(",", "")) >= 1000
-    ))
-    return prices[0] if prices else None
+            price = float(m.group(1))
+
+        if not price:
+            m = re.search(r'"price"\s*:\s*"([\d,]+)"', html)
+            if m:
+                price = float(m.group(1).replace(",", ""))
+
+        if not price:
+            # Look for ₹ in raw HTML
+            matches = re.findall(r'₹\s*([\d,]+)', html)
+            candidates = [int(p.replace(",", "")) for p in matches
+                         if p.replace(",", "").isdigit() and 1000 <= int(p.replace(",", "")) <= 500000]
+            if candidates:
+                from collections import Counter
+                price = Counter(candidates).most_common(1)[0][0]
+
+        title_m = re.search(r'<meta[^>]+name=["\']title["\'][^>]+content=["\'](.*?)["\']', html)
+        if not title_m:
+            title_m = re.search(r'<title>(.*?)</title>', html)
+        title = title_m.group(1).strip() if title_m else "Amazon Product"
+        title = re.sub(r'\s*[\|–-]\s*Amazon\..*$', '', title).strip()
+
+        if not price:
+            return None
+        return {"title": title, "price": float(price), "site": "amazon"}
+
+    else:
+        # Generic
+        matches = re.findall(r'₹\s*([\d,]+)', html)
+        candidates = sorted(set(
+            int(p.replace(",", "")) for p in matches
+            if p.replace(",", "").isdigit() and int(p.replace(",", "")) >= 1000
+        ))
+        if not candidates:
+            return None
+        title_m = re.search(r'<title>(.*?)</title>', html)
+        title = title_m.group(1).strip() if title_m else "Product"
+        return {"title": title, "price": float(candidates[0]), "site": "other"}
 
 
-# --- Scrape one URL ---
 def scrape_price(url: str) -> dict | None:
     for attempt in range(1, 3):
-        fetched = fetch_html(url)
-        if not fetched:
-            logger.warning(f"Attempt {attempt}/2 — fetch failed")
-            continue
-        html, final_url = fetched
-        logger.info(f"Fetched {len(html):,} chars from {final_url[:60]}")
-
-        if len(html) < 5000:
-            logger.warning(f"Attempt {attempt}/2 — page too small ({len(html)} chars), likely bot block")
+        html = fetch_html(url)
+        if not html:
+            logger.warning(f"Attempt {attempt}/2 — fetch returned nothing")
             continue
 
-        result = parse_price_from_html(html, final_url)
+        logger.info(f"Fetched {len(html):,} chars")
+
+        result = extract_price(html, url)
         if result:
             return result
-        logger.warning(f"Attempt {attempt}/2 — no price found in HTML")
+
+        logger.warning(f"Attempt {attempt}/2 — no price extracted from HTML")
 
     return None
 
